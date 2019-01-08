@@ -12,6 +12,7 @@ machine to check which dependencies are missing. The common ones are provided be
 gconf-service
 libasound2
 libatk1.0-0
+libatk-bridge2.0-0
 libc6
 libcairo2
 libcups2
@@ -78,29 +79,104 @@ xorg-x11-fonts-misc
 ```
 </details>
 
-- Check out discussions:
-  - [#290](https://github.com/GoogleChrome/puppeteer/issues/290) - Debian troubleshooting
-  - [#391](https://github.com/GoogleChrome/puppeteer/issues/391) - CentOS troubleshooting
-  - [#379](https://github.com/GoogleChrome/puppeteer/issues/379) - Alpine troubleshooting
+<details>
+  <summary>Check out discussions</summary>
+  
+- [#290](https://github.com/GoogleChrome/puppeteer/issues/290) - Debian troubleshooting <br/>
+- [#391](https://github.com/GoogleChrome/puppeteer/issues/391) - CentOS troubleshooting <br/>
+- [#379](https://github.com/GoogleChrome/puppeteer/issues/379) - Alpine troubleshooting <br/>
+</details>
 
-## Chrome Headless fails due to sandbox issues
+## Setting Up Chrome Linux Sandbox
 
-- Make sure kernel version is up-to-date.
-- Read about linux sandbox here: https://chromium.googlesource.com/chromium/src/+/master/docs/linux_suid_sandbox_development.md
-- Try running without the sandbox (**Note: running without the sandbox is not recommended due to security reasons!**)
+In order to protect the host environment from untrusted web content, Chrome uses [multiple layers of sandboxing](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/linux_sandboxing.md). For this to work properly,
+the host should be configured first. If there's no good sandbox for Chrome to use, it will crash
+with the error `No usable sandbox!`.
+
+If you **absolutely trust** the content you open in Chrome, you can launch Chrome
+with the `--no-sandbox` argument:
 
 ```js
 const browser = await puppeteer.launch({args: ['--no-sandbox', '--disable-setuid-sandbox']});
 ```
-## Running Puppeteer on Travis CI
 
-To run headless Chrome on Travis, you *must* call `launch()` with flags to disable Chrome's sandbox, like so:
+> **NOTE**: Running without a sandbox is **strongly discouraged**. Consider configuring a sandbox instead.
 
-```js
-const browser = await puppeteer.launch({args: ['--no-sandbox']});
+There are 2 ways to configure a sandbox in Chromium.
+
+### [recommended] Enable [user namespace cloning](http://man7.org/linux/man-pages/man7/user_namespaces.7.html)
+
+User namespace cloning is only supported by modern kernels. Unprivileged user namespaces are generally fine to enable,
+but in some cases they open up more kernel attack surface for (unsandboxed) non-root processes to elevate to
+kernel privileges.
+
+```bash
+sudo sysctl -w kernel.unprivileged_userns_clone=1
 ```
 
+### [alternative] Setup [setuid sandbox](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/linux_suid_sandbox_development.md)
+
+The setuid sandbox comes as a standalone executable and is located next to the Chromium that Puppeteer downloads. It is
+fine to re-use the same sandbox executable for different Chromium versions, so the following could be
+done only once per host environment:
+
+```bash
+# cd to the downloaded instance
+cd <project-dir-path>/node_modules/puppeteer/.local-chromium/linux-<revision>/chrome-linux/
+sudo chown root:root chrome_sandbox
+sudo chmod 4755 chrome_sandbox
+# copy sandbox executable to a shared location
+sudo cp -p chrome_sandbox /usr/local/sbin/chrome-devel-sandbox
+# export CHROME_DEVEL_SANDBOX env variable
+export CHROME_DEVEL_SANDBOX=/usr/local/sbin/chrome-devel-sandbox
+```
+
+You might want to export the `CHROME_DEVEL_SANDBOX` env variable by default. In this case, add the following to the `~/.bashrc`
+or `.zshenv`:
+
+```bash
+export CHROME_DEVEL_SANDBOX=/usr/local/sbin/chrome-devel-sandbox
+```
+
+
+## Running Puppeteer on Travis CI
+
+> 👋 We run our tests for Puppeteer on Travis CI - see our [`.travis.yml`](https://github.com/GoogleChrome/puppeteer/blob/master/.travis.yml) for reference.
+
+Tips-n-tricks:
+- The `libnss3` package must be installed in order to run Chromium on Ubuntu Trusty
+- [user namespace cloning](http://man7.org/linux/man-pages/man7/user_namespaces.7.html) should be enabled to support
+  proper sandboxing
+- [xvfb](https://en.wikipedia.org/wiki/Xvfb) should be launched in order to run Chromium in non-headless mode (e.g. to test Chrome Extensions)
+
+To sum up, your `.travis.yml` might look like this:
+
+```yml
+language: node_js
+dist: trusty
+addons:
+  apt:
+    packages:
+      # This is required to run new chrome on old trusty
+      - libnss3
+notifications:
+  email: false
+cache:
+  directories:
+    - node_modules
+# allow headful tests
+before_install:
+  # Enable user namespace cloning
+  - "sysctl kernel.unprivileged_userns_clone=1"
+  # Launch XVFB
+  - "export DISPLAY=:99.0"
+  - "sh -e /etc/init.d/xvfb start"
+```
+
+
 ## Running Puppeteer in Docker
+
+> 👋 We use [Cirrus Ci](https://cirrus-ci.org/) to run our tests for Puppeteer in a Docker container - see our [`Dockerfile.linux`](https://github.com/GoogleChrome/puppeteer/blob/master/.ci/node8/Dockerfile.linux) for reference.
 
 Getting headless Chrome up and running in Docker can be tricky.
 The bundled Chromium that Puppeteer installs is missing the necessary
@@ -172,14 +248,14 @@ how to run this Dockerfile from a webserver running on App Engine Flex (Node).
 
 ### Running on Alpine
 
-The [newest Chromium package](https://pkgs.alpinelinux.org/package/edge/community/x86_64/chromium) supported on Alpine is 64, which was corresponding to [Puppeteer v0.13.0](https://github.com/GoogleChrome/puppeteer/releases/tag/v0.13.0).
+The [newest Chromium package](https://pkgs.alpinelinux.org/package/edge/community/x86_64/chromium) supported on Alpine is 68, which was corresponding to [Puppeteer v1.4.0](https://github.com/GoogleChrome/puppeteer/releases/tag/v1.4.0).
 
 Example Dockerfile:
 
 ```Dockerfile
 FROM node:9-alpine
 
-# Installs latest Chromium (64) package.
+# Installs latest Chromium (68) package.
 RUN apk update && apk upgrade && \
     echo @edge http://nl.alpinelinux.org/alpine/edge/community >> /etc/apk/repositories && \
     echo @edge http://nl.alpinelinux.org/alpine/edge/main >> /etc/apk/repositories && \
@@ -192,8 +268,8 @@ RUN apk update && apk upgrade && \
 # Tell Puppeteer to skip installing Chrome. We'll be using the installed package.
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD true
 
-# Puppeteer v0.13.0 works with Chromium 64.
-RUN yarn add puppeteer@0.13.0
+# Puppeteer v1.4.0 works with Chromium 68.
+RUN yarn add puppeteer@1.4.0
 
 # Add user so we don't need --no-sandbox.
 RUN addgroup -S pptruser && adduser -S -g pptruser pptruser \
@@ -240,7 +316,21 @@ experiencing a lot of zombies Chrome processes sticking around. There's special
 treatment for processes with PID=1, which makes it hard to terminate Chrome
 properly in some cases (e.g. in Docker).
 
-## Running Puppeteer on Heroku
+## Running Puppeteer in the cloud
+
+### Running Puppeteer on Google App Engine
+
+The Node.js runtime of the [App Engine standard environment](https://cloud.google.com/appengine/docs/standard/nodejs/) comes with all system packages needed to run Headless Chrome.
+
+To use `puppeteer`, simply list the module as a dependency in your `package.json` and deploy to Google App Engine. Read more about using `puppeteer` on App Engine by following [the official tutorial](https://cloud.google.com/appengine/docs/standard/nodejs/using-headless-chrome-with-puppeteer).
+
+### Running Puppeteer on Google Cloud Functions
+
+The Node.js 8 runtime of [Google Cloud Functions](https://cloud.google.com/functions/docs/) comes with all system packages needed to run Headless Chrome.
+
+To use `puppeteer`, simply list the module as a dependency in your `package.json` and deploy your function to Google Cloud Functions using the `nodejs8` runtime.
+
+### Running Puppeteer on Heroku
 
 Running Puppeteer on Heroku requires some additional dependencies that aren't included on the Linux box that Heroku spins up for you. To add the dependencies on deploy, add the Puppeteer Heroku buildpack to the list of buildpacks for your app under Settings > Buildpacks.
 
@@ -252,10 +342,22 @@ If you need to render Chinese, Japanese, or Korean characters you may need to us
 
 There's also another [simple guide](https://timleland.com/headless-chrome-on-heroku/) from @timleland that includes a sample project: https://timleland.com/headless-chrome-on-heroku/.
 
-## Running Puppeteer on AWS Lambda
+### Running Puppeteer on AWS Lambda
 
 AWS Lambda [limits](https://docs.aws.amazon.com/lambda/latest/dg/limits.html) deployment package sizes to ~50MB. This presents challenges for running headless Chrome (and therefore Puppeteer) on Lambda. The community has put together a few resources that work around the issues:
 
 - https://github.com/adieuadieu/serverless-chrome/blob/master/docs/chrome.md (tracks the latest Chromium snapshots)
-- https://github.com/universalbasket/aws-lambda-chrome
+- https://github.com/alixaxel/chrome-aws-lambda (kept updated with the latest stable release of puppeteer)
 - https://github.com/Kikobeats/aws-lambda-chrome
+
+## Code Transpilation Issues
+
+If you are using a JavaScript transpiler like babel or TypeScript, calling `evaluate()` with an async function might not work. This is because while `puppeteer` uses `Function.prototype.toString()` to serialize functions while transpilers could be changing the output code in such a way it's incompatible with `puppeteer`.
+
+Some workarounds to this problem would be to instruct the transpiler not to mess up with the code, for example, configure TypeScript to use latest ecma version (`"target": "es2018"`). Another workaround could be using string templates instead of functions:
+
+```js
+await page.evaluate(`(async() => {
+   console.log('1');
+})()`);
+```

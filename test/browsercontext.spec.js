@@ -15,8 +15,10 @@
  */
 
 const utils = require('./utils');
+const puppeteer = utils.requireRoot('index');
+const {TimeoutError} = utils.requireRoot('Errors');
 
-module.exports.addTests = function({testRunner, expect, puppeteer}) {
+module.exports.addTests = function({testRunner, expect}) {
   const {describe, xdescribe, fdescribe} = testRunner;
   const {it, fit, xit} = testRunner;
   const {beforeAll, beforeEach, afterAll, afterEach} = testRunner;
@@ -28,6 +30,7 @@ module.exports.addTests = function({testRunner, expect, puppeteer}) {
       expect(defaultContext.isIncognito()).toBe(false);
       let error = null;
       await defaultContext.close().catch(e => error = e);
+      expect(browser.defaultBrowserContext()).toBe(defaultContext);
       expect(error.message).toContain('cannot be closed');
     });
     it('should create new incognito context', async function({browser, server}) {
@@ -40,14 +43,15 @@ module.exports.addTests = function({testRunner, expect, puppeteer}) {
       expect(browser.browserContexts().length).toBe(1);
     });
     it('should close all belonging targets once closing context', async function({browser, server}) {
-      expect((await browser.pages()).length).toBe(2);
+      expect((await browser.pages()).length).toBe(1);
 
       const context = await browser.createIncognitoBrowserContext();
       await context.newPage();
-      expect((await browser.pages()).length).toBe(3);
+      expect((await browser.pages()).length).toBe(2);
+      expect((await context.pages()).length).toBe(1);
 
       await context.close();
-      expect((await browser.pages()).length).toBe(2);
+      expect((await browser.pages()).length).toBe(1);
     });
     it('window.open should use parent tab context', async function({browser, server}) {
       const context = await browser.createIncognitoBrowserContext();
@@ -74,6 +78,24 @@ module.exports.addTests = function({testRunner, expect, puppeteer}) {
         `CHANGED: ${server.EMPTY_PAGE}`,
         `DESTROYED: ${server.EMPTY_PAGE}`
       ]);
+      await context.close();
+    });
+    it('should wait for a target', async function({browser, server}) {
+      const context = await browser.createIncognitoBrowserContext();
+      let resolved = false;
+      const targetPromise = context.waitForTarget(target => target.url() === server.EMPTY_PAGE);
+      targetPromise.then(() => resolved = true);
+      const page = await context.newPage();
+      expect(resolved).toBe(false);
+      await page.goto(server.EMPTY_PAGE);
+      const target = await targetPromise;
+      expect(await target.page()).toBe(page);
+      await context.close();
+    });
+    it('should timeout waiting for a non-existent target', async function({browser, server}) {
+      const context = await browser.createIncognitoBrowserContext();
+      const error = await context.waitForTarget(target => target.url() === server.EMPTY_PAGE, {timeout: 1}).catch(e => e);
+      expect(error).toBeInstanceOf(TimeoutError);
       await context.close();
     });
     it('should isolate localStorage and cookies', async function({browser, server}) {
